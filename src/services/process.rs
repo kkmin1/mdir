@@ -73,29 +73,37 @@ pub fn get_process_list() -> Vec<ProcessInfo> {
 
 /// Get list of running processes with error handling
 pub fn get_process_list_result() -> ProcessListResult {
-    let output = Command::new("ps")
-        .args(["aux"])
-        .output()
-        .map_err(|e| format!("Failed to execute ps command: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ps command failed: {}", stderr.trim()));
+    #[cfg(not(unix))]
+    {
+        return Ok(Vec::new());
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut processes: Vec<ProcessInfo> = stdout
-        .lines()
-        .skip(1) // Skip header line (compatible with both Linux and macOS)
-        .filter_map(parse_process_line)
-        .collect();
+    #[cfg(unix)]
+    {
+        let output = Command::new("ps")
+            .args(["aux"])
+            .output()
+            .map_err(|e| format!("Failed to execute ps command: {}", e))?;
 
-    // Sort by CPU usage descending by default
-    processes.sort_by(|a, b| {
-        b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal)
-    });
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("ps command failed: {}", stderr.trim()));
+        }
 
-    Ok(processes)
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut processes: Vec<ProcessInfo> = stdout
+            .lines()
+            .skip(1) // Skip header line (compatible with both Linux and macOS)
+            .filter_map(parse_process_line)
+            .collect();
+
+        // Sort by CPU usage descending by default
+        processes.sort_by(|a, b| {
+            b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(processes)
+    }
 }
 
 fn parse_process_line(line: &str) -> Option<ProcessInfo> {
@@ -184,18 +192,7 @@ pub fn kill_process_with_verification(pid: i32, starttime: Option<u64>) -> Resul
     #[cfg(not(target_os = "linux"))]
     let _ = starttime; // Suppress unused warning
 
-    // Use libc kill for safety
-    let result = unsafe { libc::kill(pid, libc::SIGTERM) };
-    if result == 0 {
-        Ok(())
-    } else {
-        let errno = std::io::Error::last_os_error();
-        match errno.raw_os_error() {
-            Some(libc::ESRCH) => Err("Process not found".to_string()),
-            Some(libc::EPERM) => Err("Permission denied".to_string()),
-            _ => Err(errno.to_string()),
-        }
-    }
+    kill_with_signal(pid, libc::SIGTERM)
 }
 
 /// Force kill a process by PID (SIGKILL)
@@ -218,7 +215,20 @@ pub fn force_kill_process_with_verification(pid: i32, starttime: Option<u64>) ->
     #[cfg(not(target_os = "linux"))]
     let _ = starttime; // Suppress unused warning
 
-    let result = unsafe { libc::kill(pid, libc::SIGKILL) };
+    #[cfg(unix)]
+    {
+        kill_with_signal(pid, libc::SIGKILL)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Err("Process killing is not supported on this platform".to_string())
+    }
+}
+
+#[cfg(unix)]
+fn kill_with_signal(pid: i32, sig: i32) -> Result<(), String> {
+    let result = unsafe { libc::kill(pid, sig) };
     if result == 0 {
         Ok(())
     } else {
@@ -231,20 +241,34 @@ pub fn force_kill_process_with_verification(pid: i32, starttime: Option<u64>) ->
     }
 }
 
+#[cfg(not(unix))]
+fn kill_with_signal(_pid: i32, _sig: i32) -> Result<(), String> {
+    Err("Process killing is not supported on this platform".to_string())
+}
+
 /// Get process command by PID
 fn get_process_command(pid: i32) -> Option<String> {
-    // Use "command=" format to suppress header (POSIX compatible, works on Linux and macOS)
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .ok()?;
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        return None;
+    }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let command = stdout.trim();
-    if command.is_empty() {
-        None
-    } else {
-        Some(command.to_string())
+    #[cfg(unix)]
+    {
+        // Use "command=" format to suppress header (POSIX compatible, works on Linux and macOS)
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .ok()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let command = stdout.trim();
+        if command.is_empty() {
+            None
+        } else {
+            Some(command.to_string())
+        }
     }
 }
 
