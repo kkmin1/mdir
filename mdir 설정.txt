@@ -1,0 +1,117 @@
+
+› 이전 세션에서 네가 다른 시스템에서도 mdir를 실행하려면 mdir.exe와 mdir 함수 설정파일을 옮겨야 한다고 했는데 다시 설명
+  해줄래
+
+
+• 핵심만 다시 정리하면, 두 가지를 같이 옮겨야 다른 PC에서도 mdir가 동일하게 동작합니다.
+
+  1. mdir.exe (실행 파일)
+
+  - 원본 PC에서 mdir.exe 위치 확인:
+
+  Get-Command mdir.exe | Select-Object Source
+  - 그 폴더를 PATH에 추가
+
+  2. mdir 함수 (PowerShell 래퍼)
+
+  Get-Command mdir | Select-Object -ExpandProperty Definition
+
+  - 보통 이 함수는 PowerShell 프로필($PROFILE)에 들어있음
+  - 원본 $PROFILE에서 function mdir { ... } 블록을 새 PC의 $PROFILE에 복사
+
+  프로필 파일 열기:
+
+  notepad $PROFILE
+
+  (파일 없으면 생성됨)
+
+  마지막 확인:
+
+  . $PROFILE
+  Get-Command mdir, mdir.exe | Format-Table Name,CommandType,Source -Auto
+
+  원하면 내가 “원본 PC에서 추출할 체크리스트”랑 “새 PC에서 붙여넣을 템플릿”까지 바로 만들어줄게.
+
+
+› 찾았어. $PROFILE을 보니까 이 pc의 폴더 링크가 세팅되어 있는데 다른 pc로 옮기면 디렉토리 주소가 달라져야 하는 것 아닌
+  가?
+
+
+• 맞아요. 정확히 보셨어요.
+  그래서 이식할 때는 아래 중 하나로 바꾸는 게 안전합니다.
+
+  - 새 PC에도 동일 경로로 파일 배치 (예: 둘 다 C:\Tools\mdir\mdir.exe)
+
+  2. 환경변수 기반으로 바꾸기 (권장)
+
+  function mdir {
+    & "$env:MDIR_HOME\mdir.exe" @args
+  }
+
+  3. PATH 사용으로 단순화
+
+  - mdir.exe 폴더를 PATH에 넣고, 함수에서는 그냥 mdir.exe 호출
+
+  function mdir {
+    mdir.exe @args
+  }
+
+  원하면 지금 네 $PROFILE 기준으로, 다른 PC에서도 안 깨지게 바로 수정할 형태로 정리해줄게.
+
+
+› 지금 $PROFILE 기준으로, 다른 PC에서도 안 깨지게 바로 수정할 형태로 정리
+
+
+• 현재 PC의 $PROFILE 내용을 확인해서, 경로 의존성을 없앤 이식용 버전으로 바로 바꿔 쓸 수 있게 정리하겠습니다. 먼저 프로
+  필에서 mdir 관련 정의를 정확히 읽어오겠습니다.
+
+• Ran $PROFILE; if (Test-Path $PROFILE) { Get-Content $PROFILE -TotalCount 300 } else { 'PROFILE_NOT_FOUND' }
+  └ C:\Users\kkmin\Documents\PowerShell\Microsoft.PowerShell_profile.ps1
+
+    … +14 lines
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• 좋아요. 지금 프로필의 문제점은 이 줄입니다.
+
+  - C:\Users\kkmin\.gemini\antigravity\playground\aphelion-intergalactic\target\release\mdir.exe
+
+  이 절대경로를 없애고, 아래처럼 환경변수 우선 + PATH fallback 형태로 바꾸면 다른 PC에서도 안 깨집니다.
+
+  # >>> mdir override (portable) >>>
+  function mdir {
+      # 1) MDIR_EXE가 있으면 그 경로 사용
+      # 2) 없으면 PATH에서 mdir.exe 탐색
+      $exe = $env:MDIR_EXE
+      if (-not $exe) {
+          $cmd = Get-Command mdir.exe -ErrorAction SilentlyContinue
+          if ($cmd) { $exe = $cmd.Source }
+      }
+
+      if (-not $exe -or -not (Test-Path $exe)) {
+          throw "mdir.exe not found. Set `$env:MDIR_EXE or add mdir.exe folder to PATH."
+      }
+
+      & $exe @args
+
+      $last = Join-Path $HOME ".cokacdir\lastdir"
+      if (Test-Path $last) {
+          $p = (Get-Content $last -Raw).Trim()
+          if ($p -and (Test-Path $p)) { Set-Location $p }
+      }
+  }
+
+  Set-Item -Path Function:\mdir.exe -Value {
+      throw "'mdir.exe' is disabled. Use 'mdir' instead."
+  }
+  # <<< mdir override (portable) <<<
+
+  그리고 PC마다 1회 설정만 해두면 됩니다(둘 중 하나).
+
+  1. MDIR_EXE 설정
+
+  [Environment]::SetEnvironmentVariable("MDIR_EXE", "C:\Tools\mdir\mdir.exe", "User")
+
+  2. 또는 mdir.exe 폴더를 PATH에 추가 (그럼 MDIR_EXE 없어도 동작)
